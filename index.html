@@ -308,7 +308,7 @@ function mkSide(team,xi,bench,ai){
   const slots=slotsOf(team.form),by=id=>team.pl.find(p=>p.id===id);
   const used=new Map();
   const on=xi.map((id,i)=>{const p=by(id);used.set(p,'s');return{p,slot:slots[i],yc:0,cond:p.cond}});
-  return{team,form:team.form,ment:team.ment,ai,on,bench:bench.map(by),subsUsed:0,used,st:{att:0,sh:0,sot:0,co:0,yc:0,rc:0}};
+  return{team,form:team.form,ment:team.ment,ai,on,bench:bench.map(by),subsUsed:0,pend:[],used,st:{att:0,sh:0,sot:0,co:0,yc:0,rc:0}};
 }
 function startMatch(hT,aT,week,userIdx){
   const M={s:[mkSide(hT,hT.xi,hT.bench,userIdx!==0),mkSide(aT,aT.xi,aT.bench,userIdx!==1)],min:0,score:[0,0],log:[],goals:[],week,done:false,htDone:false,pre:false,str:null};
@@ -335,6 +335,23 @@ function doSub(M,i,x,b,forced){
   if(!s.used.has(b))s.used.set(b,'b');
   L(M,'u',"Substitution for "+s.team.short+": "+b.n+" replaces "+x.p.n+(forced?" (injury).":"."),i);
   recalc(M);
+}
+function subIn(M,i,b,slot){
+  const s=M.s[i];
+  s.on.push({p:b,slot,yc:0,cond:b.cond});
+  s.on.sort((p,q)=>GORD[p.slot]-GORD[q.slot]);
+  s.bench=s.bench.filter(p=>p!==b);s.subsUsed++;
+  if(!s.used.has(b))s.used.set(b,'b');
+  L(M,'u',"Substitution for "+s.team.short+": "+b.n+" comes on"+({G:" in goal",D:" in defence",M:" in midfield",F:" in attack"}[slot]||"")+".",i);
+  recalc(M);
+}
+function autoFill(M,i){
+  const s=M.s[i];
+  while(s.pend&&s.pend.length){
+    const e=s.pend.shift();
+    if(e.slot==='G')continue;
+    if(s.subsUsed<3){const b=bestSub(s,e.slot);if(b)subIn(M,i,b,e.slot)}
+  }
 }
 const hasGK=s=>s.on.some(x=>x.slot==='G');
 function pickW(arr,w){
@@ -408,9 +425,17 @@ function injuryEvent(M,i){
   const s=M.s[i],x=pickW(s.on,y=>y.slot==='G'?.25:1),p=x.p;
   p.inj=pick([1,1,2,2,3,4,6,8]);p.iw=M.week;
   L(M,'i',p.n+" ("+s.team.short+") goes down injured and cannot continue.",i);
+  if(!s.ai){
+    s.on=s.on.filter(y=>y!==x);recalc(M);
+    const left=3-s.subsUsed;
+    if(left>0&&s.bench.some(avail)){
+      (s.pend=s.pend||[]).push({slot:x.slot,n:p.n});
+      flag(M,i,p.n+" ("+p.pos+") is injured. Tap a substitute to bring him on, or press Play and the game picks the best one. Substitutions left: "+left+".");
+    }else flag(M,i,p.n+" ("+p.pos+") is injured and you have no substitutes left, so you are a man short. You can change the formation.");
+    return;
+  }
   const b=s.subsUsed<3?bestSub(s,x.slot):null;
-  if(b)doSub(M,i,x,b,true);else{s.on=s.on.filter(y=>y!==x);recalc(M);if(s.ai)fixKeeper(M,i)}
-  flag(M,i,p.n+" is injured"+(b?" and "+b.n+" has come on. You can still change the shape.":" and you have no suitable substitute, so you are a man short."));
+  if(b)doSub(M,i,x,b,true);else{s.on=s.on.filter(y=>y!==x);recalc(M);fixKeeper(M,i)}
 }
 function aiManage(M,i){
   const s=M.s[i],m=M.min;
@@ -445,6 +470,7 @@ function doShot(M,ai){
 function stepMin(M){
   if(M.done)return;
   const m=++M.min,S=M.s;
+  for(let i=0;i<2;i++)if(S[i].pend&&S[i].pend.length)autoFill(M,i);
   for(let i=0;i<2;i++)if(S[i].on.length&&!hasGK(S[i]))fixKeeper(M,i);
   for(let i=0;i<2;i++)for(const x of S[i].on)x.cond-=Math.max(.03,.16-.006*x.p.a[STA])*(x.slot==='G'?.25:1);
   for(let i=0;i<2;i++)if(S[i].ai)aiManage(M,i);
@@ -745,7 +771,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const UI={screen:'title',last:'',seg:{squad:'ov',lg:'tbl',club:'trn',tr:'mkt'},tf:'A',mkp:0,fw:0,sheet:null,setup:null,msg:'',saved:'',mtab:'comm',mpaused:true,speed:'n',msel:-1,mt:null,res:0,save:null,expo:'',sx:'',helpFrom:'game',armed:false};
 let M=null,DBc=null,UID=null,DEF=null;
 const SP={s:900,n:380,f:80};
-const VERSION='v3.2',VDATE='21 Oct 2026';
+const VERSION='v3.2.1',VDATE='21 Oct 2026';
 const verTxt=()=>'Version '+VERSION+' · '+VDATE;
 const f1=v=>v.toFixed(1);
 const ord=n=>n+(n%100>=11&&n%100<=13?'th':({1:'st',2:'nd',3:'rd'}[n%10]||'th'));
@@ -1051,11 +1077,12 @@ function mTeamHTML(){
   if(M.pre)return'<div class="pb">Kick off first, or go back to the Tactics screen to change your starting eleven.</div>';
   const s=M.s[mi()];
   return'<div class="pb"><div class="row"><span>Mentality</span>'+['D','N','A'].map(k=>'<button class="btn sm'+(s.ment===k?' on':'')+'" data-act="mment" data-v="'+k+'">'+MENT[k]+'</button>').join('')+'</div><div class="row" style="margin-top:6px"><span>Formation</span>'+Object.keys(FORMS).map(f=>'<button class="btn sm'+(s.form===f?' on':'')+'" data-act="mform" data-v="'+f+'">'+f+'</button>').join('')+'</div><div class="kv" style="margin-top:8px"><span>Attack</span><span>'+bar(M.str[mi()].A,20)+f1(M.str[mi()].A)+'</span><span>Midfield</span><span>'+bar(M.str[mi()].M,20)+f1(M.str[mi()].M)+'</span><span>Defence</span><span>'+bar(M.str[mi()].D,20)+f1(M.str[mi()].D)+'</span></div><p class="sub" style="margin:6px 0 0">Substitutions used '+s.subsUsed+' of 3. Formation changes apply to this match only. Tap a player on the pitch, then a substitute.</p></div>'+
+    (s.pend&&s.pend.length?'<div class="note" style="margin:8px"><b>Injury replacement.</b> '+esc(s.pend[0].n)+' has gone off. Tap a substitute below to bring him on. He plays in his natural position, so you can change the shape. Substitutions left: '+(3-s.subsUsed)+'.<div class="row" style="margin-top:6px"><button class="btn sm" data-act="mshort">Play a man short</button></div></div>':'')+
     (hasGK(s)?'':'<div class="note" style="margin:8px"><b>No goalkeeper on the pitch.</b> Tap an outfield player, then Put in goal. Or tap a player, then a substitute goalkeeper.<div class="row" style="margin-top:6px"><button class="btn sm" data-act="mgoal"'+(UI.msel>=0?'':' disabled')+'>Put selected player in goal</button><button class="btn sm" data-act="mauto">Let the game choose</button></div></div>')+
     '<div class="tw"><table><thead><tr><th>Role</th><th>Name</th><th class="n">Cond</th><th></th></tr></thead><tbody>'+
     s.on.map((x,i)=>'<tr data-act="msel" data-i="'+i+'"'+(UI.msel===i?' class="sel"':'')+'><td>'+gname[x.slot]+'</td><td class="nm">'+esc(x.p.n)+'</td><td class="n">'+Math.round(x.cond)+'</td><td>'+(x.yc?'Yellow':'')+'</td></tr>').join('')+'</tbody></table></div>'+
-    '<div class="tw"><table><thead><tr><th>Pos</th><th>Substitute</th><th class="n">Cond</th></tr></thead><tbody>'+
-    (s.bench.map((p,j)=>'<tr data-act="msub" data-i="'+j+'"><td>'+p.pos+'</td><td class="nm">'+esc(p.n)+'</td><td class="n">'+Math.round(p.cond)+'</td></tr>').join('')||'<tr><td colspan="3">No substitutes left.</td></tr>')+'</tbody></table></div>';
+    '<div class="tw"><table><thead><tr><th>Pos</th><th>'+(s.pend&&s.pend.length?'Substitute (tap to bring on)':'Substitute')+'</th><th class="n">Cond</th></tr></thead><tbody>'+
+    (s.bench.map((p,j)=>'<tr data-act="'+(s.pend&&s.pend.length?'minj':'msub')+'" data-i="'+j+'"><td>'+p.pos+'</td><td class="nm">'+esc(p.n)+'</td><td class="n">'+Math.round(p.cond)+'</td></tr>').join('')||'<tr><td colspan="3">No substitutes left.</td></tr>')+'</tbody></table></div>';
 }
 function mUpdate(full){
   const sc=$('#mScore'),b=$('#mBody');
@@ -1125,7 +1152,7 @@ function sHelp(){
     P('The aim',['Manage one club through a 38-match league season. Win matches, climb the table, and build a better squad than the other 19 clubs.','All club and player names are invented. You can load your own names from the start screen.'])+
     P('Each matchday',['Press <b>Continue</b> at the top. You see both teams, then press <b>Kick off</b>.','Use <b>Slow</b>, <b>Normal</b> or <b>Fast</b> to set the commentary speed, or <b>Skip to end</b>.','After the whistle, press <b>Full time</b> to see all results.'])+
     P('Squad and tactics',['<b>Squad</b>: tap a player to see his attributes (1 to 20), condition and rating. Green +1 marks show attributes that improved this season.','<b>Tactics</b>: pick a formation and a mentality, and tap a row in the starting eleven to swap a player. Changing formation re-picks your best eleven.','Tired, injured or suspended players are replaced automatically if you forget.'])+
-    P('During a match',['Press <b>Tactics</b> on the bottom bar. The match pauses and My team opens.','Change formation or mentality. Changes last for that match only.','The match also pauses by itself when one of your players is sent off or badly injured, even if you pressed Skip to end, so you can react. If the goalkeeper is lost, put someone in goal; if you just press Play, the game chooses for you.','To make a substitution, tap a player on the pitch, then a substitute. You can make three.','If one of your players is sent off or badly injured, the match pauses and opens My team. If you lose your goalkeeper, put someone in goal or let the game choose.'])+
+    P('During a match',['Press <b>Tactics</b> on the bottom bar. The match pauses and My team opens.','Change formation or mentality. Changes last for that match only.','The match also pauses by itself when one of your players is sent off or injured, even if you pressed Skip to end, so you can react.','After an injury, tap a substitute to bring him on. He plays in his natural position, so a defender for an injured attacker gives you a more defensive shape. You can also change formation. If you just press Play, the game picks the best replacement.','If the goalkeeper is lost, put someone in goal. If you press Play without choosing, the game chooses for you.','To make a substitution, tap a player on the pitch, then a substitute. You can make three.','If one of your players is sent off or badly injured, the match pauses and opens My team. If you lose your goalkeeper, put someone in goal or let the game choose.'])+
     P('Transfers and scouting',['<b>Transfers, Market</b>: other clubs\' players show a rough ability bar and an asking price. Their attributes stay hidden until a scout reports on them.','Use the filters to narrow the list by position and price, and to change the sort order.','Open a player to bid. Drag the slider to set your offer and read the hint under it. Bids are answered after the next matchday.','Put your own players on the transfer list from their profile. Offers appear under Transfers, Deals.','<b>Club, Staff</b>: hire up to three scouts. Each matchday they report on players at other clubs.'])+
     P('Training and coaches',['<b>Club, Training</b>: for goalkeepers, defenders, midfielders and attackers, choose one focus attribute and an intensity.','A coach for each area speeds things up and slowly improves that position\'s key attributes. Young players and low attributes improve fastest.','Heavy training improves players faster but tires them and adds a small injury risk.','Coaches and scouts are paid every week from the same budget you use to buy players.'])+
     P('Saving',['The game saves after every matchday, in this browser only.','On iPhone, a game opened from the Home Screen icon is stored separately from one opened in Safari. Pick one and keep using it.','Back up often: Club, Settings, <b>Export save</b>. To restore, use <b>Import save</b> there, or <b>Load saved game</b> on the start screen.'])+
@@ -1200,8 +1227,10 @@ function act(a,d,ev){
       if(M.inc){if(M.done)M.inc=null;else{incident();break}}
       if(M.min>=45)M.htDone=true;
       UI.mpaused=true;UI.msel=-1;render();break;
-    case'mgoal':{const s=M.s[mi()],x=s.on[UI.msel];if(x&&!hasGK(s)){x.slot='G';L(M,'u',x.p.n+' ('+s.team.short+') takes over in goal.',mi());recalc(M)}UI.msel=-1;mUpdate(true);break}
-    case'mauto':fixKeeper(M,mi());UI.msel=-1;mUpdate(true);break;
+    case'mgoal':{const s=M.s[mi()],x=s.on[UI.msel];if(x&&!hasGK(s)){x.slot='G';L(M,'u',x.p.n+' ('+s.team.short+') takes over in goal.',mi());recalc(M)}UI.msel=-1;UI.msg='';render();break}
+    case'mauto':fixKeeper(M,mi());UI.msel=-1;UI.msg='';render();break;
+    case'minj':{const s=M.s[mi()],b=s.bench[+d.i];if(b&&s.subsUsed<3){const slot=!hasGK(s)?'G':POSG[b.pos];subIn(M,mi(),b,slot);if(s.pend&&s.pend.length){const k=s.pend.findIndex(e=>e.slot===slot);s.pend.splice(k<0?0:k,1)}UI.msel=-1}UI.msg=s.pend&&s.pend.length?'Another player needs replacing.':'';render();break}
+    case'mshort':{M.s[mi()].pend=[];UI.msg='';render();break}
     case'tf':UI.tf=d.v;UI.mkp=0;render();break;
     case'mkmore':UI.mkp++;render();break;
     case'bid':{const e=placeBid(+d.pid,+d.fee);UI.msg=e||'Bid placed. You will hear back after the next matchday.';UI.sheet=null;if(!e)save();render();break}
