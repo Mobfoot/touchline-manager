@@ -106,6 +106,10 @@ textarea{width:100%;min-height:150px;font:11px/1.35 ui-monospace,Menlo,Consolas,
 .up{color:var(--good);font-size:9px;margin-left:1px}
 .cl.t{border-left:4px solid var(--blue);color:#27406f}
 ul.hl{margin:0;padding-left:18px;display:grid;gap:6px}
+input[type=range]{accent-color:var(--blue);min-width:0;height:28px}
+.bidbox{display:grid;gap:8px;margin-bottom:8px}
+.hint{padding:6px 8px;border:1px solid var(--line);background:var(--ra);font-weight:700}
+.hint.h0{color:var(--bad)}.hint.h1{color:var(--warn)}.hint.h2,.hint.h3{color:var(--good)}
 
 </style>
 </head>
@@ -324,14 +328,47 @@ function bestSub(s,slot){
 }
 function doSub(M,i,x,b,forced){
   const s=M.s[i],k=s.on.indexOf(x);
-  s.on[k]={p:b,slot:x.slot,yc:0,cond:b.cond};
+  const slot=(!hasGK(s)&&POSG[b.pos]==='G'&&x.slot!=='G')?'G':x.slot;
+  s.on[k]={p:b,slot,yc:0,cond:b.cond};
   s.bench=s.bench.filter(p=>p!==b);
   s.subsUsed++;
   if(!s.used.has(b))s.used.set(b,'b');
   L(M,'u',"Substitution for "+s.team.short+": "+b.n+" replaces "+x.p.n+(forced?" (injury).":"."),i);
   recalc(M);
 }
-function sendOff(M,i,x){const s=M.s[i];s.on=s.on.filter(y=>y!==x);s.st.rc++;recalc(M)}
+const hasGK=s=>s.on.some(x=>x.slot==='G');
+function pickW(arr,w){
+  let t=0;const ws=arr.map(x=>{const v=w(x);t+=v;return v});
+  let u=rnd()*t;
+  for(let k=0;k<arr.length;k++){if(u<ws[k])return arr[k];u-=ws[k]}
+  return arr[arr.length-1];
+}
+function flag(M,i,t){
+  const s=M.s[i];
+  if(s.ai||M.done)return;
+  const extra=hasGK(s)?'':' You have no goalkeeper. Put someone in goal, or press Play and the game will choose for you.';
+  M.inc=M.inc?{i,t:M.inc.t.replace(/ You have no goalkeeper.*$/,'')+' '+t+extra}:{i,t:t+extra};
+}
+function fixKeeper(M,i){
+  const s=M.s[i];
+  if(!s.on.length||hasGK(s))return false;
+  if(s.subsUsed<3){
+    const b=bestSub(s,'G');
+    if(b){
+      const x=s.on.slice().sort((p,q)=>rateAs(p.p,p.slot)*ff(p.cond)-rateAs(q.p,q.slot)*ff(q.cond))[0],k=s.on.indexOf(x);
+      s.on[k]={p:b,slot:'G',yc:0,cond:b.cond};
+      s.bench=s.bench.filter(p=>p!==b);s.subsUsed++;
+      if(!s.used.has(b))s.used.set(b,'b');
+      L(M,'u',"Substitution for "+s.team.short+": goalkeeper "+b.n+" replaces "+x.p.n+".",i);
+      recalc(M);return true;
+    }
+  }
+  const x=s.on.slice().sort((p,q)=>q.p.a[HAN]-p.p.a[HAN])[0];
+  x.slot='G';
+  L(M,'u',x.p.n+" ("+s.team.short+") takes over in goal.",i);
+  recalc(M);return true;
+}
+function sendOff(M,i,x){const s=M.s[i];s.on=s.on.filter(y=>y!==x);s.st.rc++;recalc(M);if(s.ai)fixKeeper(M,i)}
 function changeForm(M,i,form){
   const s=M.s[i];
   if(!FORMS[form]||s.form===form)return;
@@ -353,26 +390,27 @@ function changeForm(M,i,form){
   recalc(M);
 }
 function cardEvent(M,i){
-  const s=M.s[i],fresh=s.on.filter(y=>y.yc===0),x=pick(fresh.length&&rnd()<.88?fresh:s.on),p=x.p;
+  const s=M.s[i],fresh=s.on.filter(y=>y.yc===0),x=pickW(fresh.length&&rnd()<.88?fresh:s.on,y=>y.slot==='G'?.2:1),p=x.p;
   if(rnd()<.02){
     L(M,'r',"RED CARD! "+p.n+" ("+s.team.short+") is sent off for a reckless tackle.",i);
-    p.sus=1+(rnd()<.35?1:0)+(rnd()<.1?1:0);p.sw=M.week;sendOff(M,i,x);return;
+    p.sus=1+(rnd()<.35?1:0)+(rnd()<.1?1:0);p.sw=M.week;sendOff(M,i,x);flag(M,i,"RED CARD: "+p.n+" is sent off. Change formation or make a substitution, or press Play to carry on a man short.");return;
   }
   x.yc++;p.yc++;s.st.yc++;
   if(x.yc>=2){
     L(M,'r',"RED CARD! "+p.n+" ("+s.team.short+") is sent off after a second booking.",i);
-    p.sus=Math.max(p.sus,1);p.sw=M.week;sendOff(M,i,x);
+    p.sus=Math.max(p.sus,1);p.sw=M.week;sendOff(M,i,x);flag(M,i,"RED CARD: "+p.n+" is sent off. Change formation or make a substitution, or press Play to carry on a man short.");
   }else{
     L(M,'y',p.n+" ("+s.team.short+") is booked.",i);
     if(p.yc%5===0){p.sus=1;p.sw=M.week}
   }
 }
 function injuryEvent(M,i){
-  const s=M.s[i],x=pick(s.on),p=x.p;
+  const s=M.s[i],x=pickW(s.on,y=>y.slot==='G'?.25:1),p=x.p;
   p.inj=pick([1,1,2,2,3,4,6,8]);p.iw=M.week;
   L(M,'i',p.n+" ("+s.team.short+") goes down injured and cannot continue.",i);
   const b=s.subsUsed<3?bestSub(s,x.slot):null;
-  if(b)doSub(M,i,x,b,true);else{s.on=s.on.filter(y=>y!==x);recalc(M)}
+  if(b)doSub(M,i,x,b,true);else{s.on=s.on.filter(y=>y!==x);recalc(M);if(s.ai)fixKeeper(M,i)}
+  flag(M,i,p.n+" is injured"+(b?" and "+b.n+" has come on. You can still change the shape.":" and you have no suitable substitute, so you are a man short."));
 }
 function aiManage(M,i){
   const s=M.s[i],m=M.min;
@@ -407,7 +445,8 @@ function doShot(M,ai){
 function stepMin(M){
   if(M.done)return;
   const m=++M.min,S=M.s;
-  for(let i=0;i<2;i++)for(const x of S[i].on)x.cond-=Math.max(.03,.16-.006*x.p.a[STA]);
+  for(let i=0;i<2;i++)if(S[i].on.length&&!hasGK(S[i]))fixKeeper(M,i);
+  for(let i=0;i<2;i++)for(const x of S[i].on)x.cond-=Math.max(.03,.16-.006*x.p.a[STA])*(x.slot==='G'?.25:1);
   for(let i=0;i<2;i++)if(S[i].ai)aiManage(M,i);
   for(let i=0;i<2;i++){
     if(S[i].on.length&&rnd()<.017)cardEvent(M,i);
@@ -439,7 +478,8 @@ function commitMatch(M){
   (G.res[w]=G.res[w]||[]).push(r);
   for(const s of M.s)s.used.forEach((how,p)=>{
     p.ap++;
-    p.cond=Math.max(30,p.cond-(how==='s'?24-p.a[STA]*.6:12-p.a[STA]*.3));
+    const gf=POSG[p.pos]==='G'?.3:1;
+    p.cond=Math.max(30,p.cond-gf*(how==='s'?24-p.a[STA]*.6:12-p.a[STA]*.3));
   });
   return r;
 }
@@ -522,7 +562,7 @@ function newGame(db,club){
 const ROLES=['G','D','M','F'];
 const RNAME={G:'Goalkeeping',D:'Defence',M:'Midfield',F:'Attack'};
 const PASSIVE={G:[HAN],D:[TCK,HEA],M:[PAS,CRE],F:[SHO,PAC]};
-const FOCUS={G:[HAN,PAS,PAC,STA],D:[TCK,HEA,PAC,PAS,STA],M:[PAS,CRE,TCK,STA,SHO],F:[SHO,PAC,HEA,CRE,PAS]};
+const FOCUS={G:[HAN,PAS,PAC],D:[TCK,HEA,PAC,PAS,STA],M:[PAS,CRE,TCK,STA,SHO],F:[SHO,PAC,HEA,CRE,PAS]};
 const INT={L:{n:'Light',g:.6,c:2,i:0},N:{n:'Normal',g:1,c:0,i:0},H:{n:'Heavy',g:1.5,c:-5,i:.006}};
 const MINC={G:2,D:5,M:5,F:3};
 const money=v=>(v<0?'-':'')+(Math.abs(v)>=1e6?'£'+(Math.abs(v)/1e6).toFixed(2)+'m':'£'+Math.round(Math.abs(v)/1000)+'k');
@@ -543,6 +583,7 @@ function initClub(g){
   g.pool=g.pool||genPool();
   g.rep=g.rep||{};g.bids=g.bids||[];g.offers=g.offers||[];g.trend=g.trend||[];
   for(const t of g.teams)if(t.cash==null)t.cash=startCash(t.rep);
+  if(g.train.G.k===STA)g.train.G.k=HAN;
 }
 function seasonClub(){
   G.rep={};G.bids=[];G.pool=genPool();
@@ -580,8 +621,8 @@ function trainWeek(w){
     };
     gain(tr.k,.05*it.g);
     if(co)for(const k of PASSIVE[g])if(k!==tr.k)gain(k,.016);
-    p.cond=clamp(p.cond+it.c,30,100);
-    if(it.i&&Math.random()<it.i){p.inj=1+Math.floor(Math.random()*3);p.iw=w;ups.push(p.n+" picks up a training injury ("+p.inj+(p.inj>1?" matches":" match")+").")}
+    p.cond=clamp(p.cond+(it.c<0&&g==='G'?it.c*.3:it.c),30,100);
+    if(it.i&&Math.random()<it.i*(g==='G'?.25:1)){p.inj=1+Math.floor(Math.random()*3);p.iw=w;ups.push(p.n+" picks up a training injury ("+p.inj+(p.inj>1?" matches":" match")+").")}
   }
   ups.slice(0,4).forEach(addNews);
   if(ups.length>4)addNews((ups.length-4)+" more training updates this week.");
@@ -633,6 +674,17 @@ function placeBid(pid,fee){
   return'';
 }
 function withdrawBid(id){G.bids=G.bids.filter(b=>b.id!==id)}
+function bidChance(p,fee){
+  const U=myTeam(),S=G.teams.find(x=>x.pl.includes(p));
+  if(!S||S.id===G.club)return{p:0,why:''};
+  const v=value(p),r=fee/v,g=POSG[p.pos];
+  let pr=clamp((r-.8)/.4,0,1),why='';
+  if(S.pl.slice().sort((x,y)=>ovr(y)-ovr(x)).slice(0,3).includes(p)&&r<1.2)pr*=.25;
+  const diff=S.rep-U.rep;
+  pr*=clamp((diff>8?.45:diff>4?.75:1)+(r-1)*.8,0,1);
+  if(count(S,g)<=MINC[g]&&r<1.6){if(r>=.8)why='group';pr=0}
+  return{p:pr,why};
+}
 function resolveBids(){
   const U=myTeam();
   for(const b of G.bids){
@@ -640,12 +692,7 @@ function resolveBids(){
     if(!p||S.id===G.club)continue;
     if(b.fee>U.cash){addNews("Your bid for "+p.n+" failed: not enough money.");continue}
     if(U.pl.length>=30){addNews("Your bid for "+p.n+" failed: squad full.");continue}
-    const v=value(p),r=b.fee/v,g=POSG[p.pos];
-    let pr=clamp((r-.8)/.4,0,1);
-    if(S.pl.slice().sort((x,y)=>ovr(y)-ovr(x)).slice(0,3).includes(p)&&r<1.2)pr*=.25;
-    const diff=S.rep-U.rep;
-    pr*=clamp((diff>8?.45:diff>4?.75:1)+(r-1)*.8,0,1);
-    if(count(S,g)<=MINC[g]&&r<1.6)pr=0;
+    const pr=bidChance(p,b.fee).p;
     if(Math.random()<pr){
       U.cash-=b.fee;S.cash+=b.fee;moveTo(p,S,U);
       addNews("Transfer complete: "+p.n+" joins from "+S.name+" for "+money(b.fee)+".");
@@ -698,7 +745,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const UI={screen:'title',last:'',seg:{squad:'ov',lg:'tbl',club:'trn',tr:'mkt'},tf:'A',mkp:0,fw:0,sheet:null,setup:null,msg:'',saved:'',mtab:'comm',mpaused:true,speed:'n',msel:-1,mt:null,res:0,save:null,expo:'',sx:'',helpFrom:'game',armed:false};
 let M=null,DBc=null,UID=null,DEF=null;
 const SP={s:900,n:380,f:80};
-const VERSION='v3.1',VDATE='15 Oct 2026';
+const VERSION='v3.2',VDATE='21 Oct 2026';
 const verTxt=()=>'Version '+VERSION+' · '+VDATE;
 const f1=v=>v.toFixed(1);
 const ord=n=>n+(n%100>=11&&n%100<=13?'th':({1:'st',2:'nd',3:'rd'}[n%10]||'th'));
@@ -1004,6 +1051,7 @@ function mTeamHTML(){
   if(M.pre)return'<div class="pb">Kick off first, or go back to the Tactics screen to change your starting eleven.</div>';
   const s=M.s[mi()];
   return'<div class="pb"><div class="row"><span>Mentality</span>'+['D','N','A'].map(k=>'<button class="btn sm'+(s.ment===k?' on':'')+'" data-act="mment" data-v="'+k+'">'+MENT[k]+'</button>').join('')+'</div><div class="row" style="margin-top:6px"><span>Formation</span>'+Object.keys(FORMS).map(f=>'<button class="btn sm'+(s.form===f?' on':'')+'" data-act="mform" data-v="'+f+'">'+f+'</button>').join('')+'</div><div class="kv" style="margin-top:8px"><span>Attack</span><span>'+bar(M.str[mi()].A,20)+f1(M.str[mi()].A)+'</span><span>Midfield</span><span>'+bar(M.str[mi()].M,20)+f1(M.str[mi()].M)+'</span><span>Defence</span><span>'+bar(M.str[mi()].D,20)+f1(M.str[mi()].D)+'</span></div><p class="sub" style="margin:6px 0 0">Substitutions used '+s.subsUsed+' of 3. Formation changes apply to this match only. Tap a player on the pitch, then a substitute.</p></div>'+
+    (hasGK(s)?'':'<div class="note" style="margin:8px"><b>No goalkeeper on the pitch.</b> Tap an outfield player, then Put in goal. Or tap a player, then a substitute goalkeeper.<div class="row" style="margin-top:6px"><button class="btn sm" data-act="mgoal"'+(UI.msel>=0?'':' disabled')+'>Put selected player in goal</button><button class="btn sm" data-act="mauto">Let the game choose</button></div></div>')+
     '<div class="tw"><table><thead><tr><th>Role</th><th>Name</th><th class="n">Cond</th><th></th></tr></thead><tbody>'+
     s.on.map((x,i)=>'<tr data-act="msel" data-i="'+i+'"'+(UI.msel===i?' class="sel"':'')+'><td>'+gname[x.slot]+'</td><td class="nm">'+esc(x.p.n)+'</td><td class="n">'+Math.round(x.cond)+'</td><td>'+(x.yc?'Yellow':'')+'</td></tr>').join('')+'</tbody></table></div>'+
     '<div class="tw"><table><thead><tr><th>Pos</th><th>Substitute</th><th class="n">Cond</th></tr></thead><tbody>'+
@@ -1021,12 +1069,18 @@ function ctlHTML(){
   return'<button class="btn go" data-act="mplay">'+(UI.mpaused?(M.min===45&&M.htDone?'Start 2nd half':'Play'):'Pause')+'</button>'+Object.keys(nm).map(k=>'<button class="btn sm'+(UI.speed===k?' on':'')+'" data-act="mspeed" data-v="'+k+'">'+nm[k]+'</button>').join('')+'<button class="btn sm" data-act="mtab" data-v="team">Tactics</button><button class="btn sm" data-act="mskip">Skip to end</button>';
 }
 function mCtl(){$('#nav').innerHTML=ctlHTML()}
+function incident(){
+  clearTimeout(UI.mt);
+  UI.mpaused=true;UI.mtab='team';UI.msel=-1;UI.msg=M.inc.t;M.inc=null;
+  render();
+}
 function mTick(){
   clearTimeout(UI.mt);
   if(!M||M.pre||M.done||UI.mpaused)return;
   UI.mt=setTimeout(()=>{
     if(!M)return;
     stepMin(M);
+    if(M.inc){if(M.done)M.inc=null;else{incident();return}}
     if(M.min===45&&!M.htDone){M.htDone=true;UI.mpaused=true}
     mUpdate(false);
     if(M.done||UI.mpaused)mCtl();else mTick();
@@ -1071,8 +1125,8 @@ function sHelp(){
     P('The aim',['Manage one club through a 38-match league season. Win matches, climb the table, and build a better squad than the other 19 clubs.','All club and player names are invented. You can load your own names from the start screen.'])+
     P('Each matchday',['Press <b>Continue</b> at the top. You see both teams, then press <b>Kick off</b>.','Use <b>Slow</b>, <b>Normal</b> or <b>Fast</b> to set the commentary speed, or <b>Skip to end</b>.','After the whistle, press <b>Full time</b> to see all results.'])+
     P('Squad and tactics',['<b>Squad</b>: tap a player to see his attributes (1 to 20), condition and rating. Green +1 marks show attributes that improved this season.','<b>Tactics</b>: pick a formation and a mentality, and tap a row in the starting eleven to swap a player. Changing formation re-picks your best eleven.','Tired, injured or suspended players are replaced automatically if you forget.'])+
-    P('During a match',['Press <b>Tactics</b> on the bottom bar. The match pauses and My team opens.','Change formation or mentality. Changes last for that match only.','To make a substitution, tap a player on the pitch, then a substitute. You can make three.'])+
-    P('Transfers and scouting',['<b>Transfers, Market</b>: other clubs\' players show a rough ability bar and an asking price. Their attributes stay hidden until a scout reports on them.','Open a player to bid. Bids are answered after the next matchday. Bids at the asking price often fail; stars at bigger clubs cost more.','Put your own players on the transfer list from their profile. Offers appear under Transfers, Deals.','<b>Club, Staff</b>: hire up to three scouts. Each matchday they report on players at other clubs.'])+
+    P('During a match',['Press <b>Tactics</b> on the bottom bar. The match pauses and My team opens.','Change formation or mentality. Changes last for that match only.','The match also pauses by itself when one of your players is sent off or badly injured, even if you pressed Skip to end, so you can react. If the goalkeeper is lost, put someone in goal; if you just press Play, the game chooses for you.','To make a substitution, tap a player on the pitch, then a substitute. You can make three.','If one of your players is sent off or badly injured, the match pauses and opens My team. If you lose your goalkeeper, put someone in goal or let the game choose.'])+
+    P('Transfers and scouting',['<b>Transfers, Market</b>: other clubs\' players show a rough ability bar and an asking price. Their attributes stay hidden until a scout reports on them.','Use the filters to narrow the list by position and price, and to change the sort order.','Open a player to bid. Drag the slider to set your offer and read the hint under it. Bids are answered after the next matchday.','Put your own players on the transfer list from their profile. Offers appear under Transfers, Deals.','<b>Club, Staff</b>: hire up to three scouts. Each matchday they report on players at other clubs.'])+
     P('Training and coaches',['<b>Club, Training</b>: for goalkeepers, defenders, midfielders and attackers, choose one focus attribute and an intensity.','A coach for each area speeds things up and slowly improves that position\'s key attributes. Young players and low attributes improve fastest.','Heavy training improves players faster but tires them and adds a small injury risk.','Coaches and scouts are paid every week from the same budget you use to buy players.'])+
     P('Saving',['The game saves after every matchday, in this browser only.','On iPhone, a game opened from the Home Screen icon is stored separately from one opened in Safari. Pick one and keep using it.','Back up often: Club, Settings, <b>Export save</b>. To restore, use <b>Import save</b> there, or <b>Load saved game</b> on the start screen.'])+
     '<div class="panel"><div class="pb"><button class="btn go" data-act="helpback">'+back+'</button></div></div>';
@@ -1136,11 +1190,18 @@ function act(a,d,ev){
     case'mback':M=null;UI.screen='tactics';UI.msg='';render();break;
     case'mkick':M.pre=false;L(M,'h','Kick-off: '+M.s[0].team.name+' v '+M.s[1].team.name+'.',-1);UI.mpaused=false;UI.mtab='comm';render();mTick();break;
     case'mplay':
-      if(UI.mpaused){UI.mpaused=false;if(UI.mtab==='team'){UI.mtab='comm';render()}else{mCtl();mUpdate(false)}mTick()}
+      if(UI.mpaused){UI.mpaused=false;UI.msg='';UI.msel=-1;if(UI.mtab==='team')UI.mtab='comm';render();mTick()}
       else{UI.mpaused=true;clearTimeout(UI.mt);mCtl()}
       break;
     case'mspeed':UI.speed=d.v;mCtl();break;
-    case'mskip':clearTimeout(UI.mt);while(!M.done)stepMin(M);M.htDone=true;UI.mpaused=true;UI.msel=-1;render();break;
+    case'mskip':
+      clearTimeout(UI.mt);
+      while(!M.done){stepMin(M);if(M.inc)break}
+      if(M.inc){if(M.done)M.inc=null;else{incident();break}}
+      if(M.min>=45)M.htDone=true;
+      UI.mpaused=true;UI.msel=-1;render();break;
+    case'mgoal':{const s=M.s[mi()],x=s.on[UI.msel];if(x&&!hasGK(s)){x.slot='G';L(M,'u',x.p.n+' ('+s.team.short+') takes over in goal.',mi());recalc(M)}UI.msel=-1;mUpdate(true);break}
+    case'mauto':fixKeeper(M,mi());UI.msel=-1;mUpdate(true);break;
     case'tf':UI.tf=d.v;UI.mkp=0;render();break;
     case'mkmore':UI.mkp++;render();break;
     case'bid':{const e=placeBid(+d.pid,+d.fee);UI.msg=e||'Bid placed. You will hear back after the next matchday.';UI.sheet=null;if(!e)save();render();break}
